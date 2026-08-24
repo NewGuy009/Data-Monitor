@@ -30,3 +30,12 @@ enum class TopLevelDestination(
         val Start: TopLevelDestination = Watchlist
     }
 }
+
+/** 个股详情是子页面，不作为底部导航项。 */
+object DetailDestination {
+    const val MARKET_ARGUMENT = "market"
+    const val CODE_ARGUMENT = "code"
+    const val route = "detail/{$MARKET_ARGUMENT}/{$CODE_ARGUMENT}"
+
+    fun createRoute(market: String, code: String): String = "detail/$market/$code"
+}

@@ -8,6 +8,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -15,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.mysecondapp.domain.model.DataProviderId
 
 @Composable
 fun SettingsScreen(
@@ -22,6 +24,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val refreshIntervalSeconds by viewModel.refreshIntervalSeconds.collectAsStateWithLifecycle()
+    val dataSourcePreference by viewModel.dataSourcePreference.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier.fillMaxSize(),
@@ -52,6 +55,32 @@ fun SettingsScreen(
                 text = "Stored in DataStore and should survive app restarts.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+            Text(
+                text = "Quote Data Source",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                viewModel.quoteProviders.forEach { providerId ->
+                    ProviderChip(
+                        providerId = providerId,
+                        selected = providerId == dataSourcePreference.primaryProviderId,
+                        onClick = { viewModel.selectPrimaryProvider(providerId) },
+                    )
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun ProviderChip(
+    providerId: DataProviderId,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(providerId.value.replaceFirstChar { character -> character.uppercase() }) },
+    )
 }

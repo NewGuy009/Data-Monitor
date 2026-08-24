@@ -3,8 +3,11 @@ package com.example.mysecondapp.ui.navigation
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.example.mysecondapp.ui.detail.StockDetailScreen
 import com.example.mysecondapp.ui.settings.SettingsScreen
 import com.example.mysecondapp.ui.watchlist.WatchlistScreen
 
@@ -25,10 +28,23 @@ fun AppNavHost(
         modifier = modifier,
     ) {
         composable(TopLevelDestination.Watchlist.route) {
-            WatchlistScreen()
+            WatchlistScreen(
+                onSnapshotClick = { item ->
+                    navController.navigate(DetailDestination.createRoute(item.market, item.code))
+                },
+            )
         }
         composable(TopLevelDestination.Settings.route) {
             SettingsScreen()
+        }
+        composable(
+            route = DetailDestination.route,
+            arguments = listOf(
+                navArgument(DetailDestination.MARKET_ARGUMENT) { type = NavType.StringType },
+                navArgument(DetailDestination.CODE_ARGUMENT) { type = NavType.StringType },
+            ),
+        ) {
+            StockDetailScreen(onBackClick = navController::navigateUp)
         }
     }
 }
