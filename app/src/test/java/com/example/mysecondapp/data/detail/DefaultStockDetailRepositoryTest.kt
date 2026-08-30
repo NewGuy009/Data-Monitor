@@ -14,6 +14,8 @@ import com.example.mysecondapp.domain.model.OrderBook
 import com.example.mysecondapp.domain.model.TradeTick
 import com.example.mysecondapp.domain.model.StockIdentity
 import com.example.mysecondapp.domain.model.Quote
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarCompletion
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarQuality
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -157,6 +159,81 @@ class DefaultStockDetailRepositoryTest {
         assertEquals("浦发银行", snapshot.quote?.name)
         assertEquals(1, snapshot.intraday?.points?.size)
         assertTrue(snapshot.candles.isEmpty())
+    }
+
+    @Test
+    fun `historical series adds provider metadata and cutoff quality`() = runBlocking {
+        val detailSource = FakeStockDetailDataSource().apply {
+            candleResult = MarketDataResult.Success(
+                value = listOf(
+                    Candle(1_000L, 10.0, 10.5, 9.5, 10.2, 100L, 1_000.0),
+                    Candle(2_000L, 10.2, 10.8, 10.0, 10.6, 120L, 1_200.0),
+                ),
+                source = MarketSource.TENCENT,
+                fetchedAtMillis = 3_000L,
+            )
+        }
+        val repository = DefaultStockDetailRepository.createForTest(
+            marketDataSource = FakeMarketDataSource(),
+            detailDataSource = detailSource,
+            klineCache = FakeKlineCache(),
+            // Move the fake clock beyond the market session close for the 1970 test date.
+            nowMillis = { 100_000_000L },
+        )
+
+        val result = repository.fetchHistoricalBarSeries(identity, CandlePeriod.DAY, limit = 10)
+
+        assertTrue(result is MarketDataResult.Success)
+        val validation = (result as MarketDataResult.Success).value
+        assertEquals(HistoricalBarQuality.COMPLETE, validation.quality)
+        assertEquals("tencent", validation.series.providerId.value)
+        assertEquals(CandlePeriod.DAY, validation.series.period)
+        assertEquals(2_000L, validation.series.analysisCutoffMillis)
+        assertEquals(HistoricalBarCompletion.CONFIRMED, validation.series.cutoffBarCompletion)
+    }
+
+    @Test
+    fun `historical series keeps invalid data visible to analysis boundary`() = runBlocking {
+        val detailSource = FakeStockDetailDataSource().apply {
+            candleResult = MarketDataResult.Success(
+                value = listOf(
+                    Candle(1_000L, 10.0, 9.0, 9.5, 10.2, 100L, 1_000.0),
+                    Candle(2_000L, 10.2, 10.8, 10.0, 10.6, 120L, 1_200.0),
+                ),
+                source = MarketSource.TENCENT,
+                fetchedAtMillis = 3_000L,
+            )
+        }
+        val repository = DefaultStockDetailRepository.createForTest(
+            marketDataSource = FakeMarketDataSource(),
+            detailDataSource = detailSource,
+            klineCache = FakeKlineCache(),
+            nowMillis = { 4_000_000L },
+        )
+
+        val result = repository.fetchHistoricalBarSeries(identity, CandlePeriod.DAY, limit = 10)
+
+        assertTrue(result is MarketDataResult.Success)
+        val validation = (result as MarketDataResult.Success).value
+        assertEquals(HistoricalBarQuality.INVALID, validation.quality)
+        assertEquals(2, validation.analysisBars.size)
+        assertTrue(validation.issues.any { issue -> issue.code.name == "INVALID_OHLC" })
+    }
+
+    @Test
+    fun `historical series rejects minute input without requesting source`() = runBlocking {
+        val detailSource = FakeStockDetailDataSource()
+        val repository = DefaultStockDetailRepository.createForTest(
+            marketDataSource = FakeMarketDataSource(),
+            detailDataSource = detailSource,
+            klineCache = FakeKlineCache(),
+            nowMillis = { 4_000_000L },
+        )
+
+        val result = repository.fetchHistoricalBarSeries(identity, CandlePeriod.MINUTE, limit = 10)
+
+        assertTrue(result is MarketDataResult.Failure)
+        assertEquals(0, detailSource.candleCallCount)
     }
 }
 

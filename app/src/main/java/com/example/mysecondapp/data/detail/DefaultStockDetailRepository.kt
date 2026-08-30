@@ -20,6 +20,11 @@ import com.example.mysecondapp.domain.model.StockDetailSnapshot
 import com.example.mysecondapp.domain.model.StockIdentity
 import com.example.mysecondapp.domain.model.TradeTick
 import com.example.mysecondapp.domain.model.toLegacyProviderId
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarCompletion
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarSeries
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarValidationResult
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarValidator
+import com.example.mysecondapp.domain.model.MarketDataContracts
 import com.example.mysecondapp.domain.repository.StockDetailRepository
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -42,16 +47,19 @@ class DefaultStockDetailRepository private constructor(
     private val providerSelector: MarketDataProviderSelector,
     private val klineCache: KlineCache,
     private val nowMillis: () -> Long,
+    private val historicalBarValidator: HistoricalBarValidator,
 ) : StockDetailRepository {
 
     @Inject
     constructor(
         providerSelector: MarketDataProviderSelector,
         roomKlineCache: RoomKlineCache,
+        historicalBarValidator: HistoricalBarValidator,
     ) : this(
         providerSelector = providerSelector,
         klineCache = roomKlineCache,
         nowMillis = System::currentTimeMillis,
+        historicalBarValidator = historicalBarValidator,
     )
 
     companion object {
@@ -61,6 +69,7 @@ class DefaultStockDetailRepository private constructor(
             detailDataSource: StockDetailDataSource,
             klineCache: KlineCache,
             nowMillis: () -> Long,
+            historicalBarValidator: HistoricalBarValidator = HistoricalBarValidator(),
         ): DefaultStockDetailRepository = DefaultStockDetailRepository(
             providerSelector = FixedMarketDataProviderSelector(
                 quoteSources = listOf(marketDataSource),
@@ -68,6 +77,7 @@ class DefaultStockDetailRepository private constructor(
             ),
             klineCache = klineCache,
             nowMillis = nowMillis,
+            historicalBarValidator = historicalBarValidator,
         )
 
         private const val QUOTE_CACHE_TTL_MILLIS = 15_000L
@@ -271,6 +281,103 @@ class DefaultStockDetailRepository private constructor(
             is MarketDataResult.Failure -> cached?.asCacheResult()
                 ?: readPersistedCandles(identity, providers.map { it.id }, period, safeLimit)
                 ?: result
+        }
+    }
+
+    override suspend fun fetchHistoricalBarSeries(
+        identity: StockIdentity,
+        period: CandlePeriod,
+        limit: Int,
+    ): MarketDataResult<HistoricalBarValidationResult> {
+        if (period == CandlePeriod.MINUTE) {
+            return MarketDataResult.Failure(
+                MarketError.Unknown("Historical analysis requires day, week, or month Bars."),
+            )
+        }
+
+        return when (val result = fetchCandles(identity, period, limit)) {
+            is MarketDataResult.Failure -> result
+            is MarketDataResult.Success -> {
+                val candles = result.value
+                val contract = MarketDataContracts.forMarket(identity.market)
+                val cutoff = candles.maxOfOrNull { it.timestampMillis }
+                    ?: return MarketDataResult.Success(
+                        value = historicalBarValidator.validate(
+                            emptyHistoricalSeries(
+                                identity = identity,
+                                period = period,
+                                result = result,
+                                marketTimeZone = contract.marketTimeZone,
+                            ),
+                        ),
+                        source = result.source,
+                        fetchedAtMillis = result.fetchedAtMillis,
+                        providerId = result.providerId,
+                    )
+                val series = HistoricalBarSeries(
+                    identity = identity,
+                    bars = candles,
+                    period = period,
+                    adjustment = candles.first().adjustment,
+                    currency = candles.first().currency,
+                    volumeUnit = candles.first().volumeUnit,
+                    providerId = result.providerId ?: result.source.toLegacyProviderId() ?: DataProviders.TENCENT,
+                    marketTimeZone = contract.marketTimeZone,
+                    fetchedAtMillis = result.fetchedAtMillis,
+                    analysisCutoffMillis = cutoff,
+                    cutoffBarCompletion = completionFor(
+                        timestampMillis = cutoff,
+                        tradingSession = contract.tradingSession,
+                        nowMillis = nowMillis(),
+                    ),
+                )
+                MarketDataResult.Success(
+                    value = historicalBarValidator.validate(series),
+                    source = result.source,
+                    fetchedAtMillis = result.fetchedAtMillis,
+                    providerId = result.providerId,
+                )
+            }
+        }
+    }
+
+    private fun emptyHistoricalSeries(
+        identity: StockIdentity,
+        period: CandlePeriod,
+        result: MarketDataResult.Success<List<Candle>>,
+        marketTimeZone: String,
+    ): HistoricalBarSeries = HistoricalBarSeries(
+        identity = identity,
+        bars = emptyList(),
+        period = period,
+        adjustment = CandleAdjustment.QFQ,
+        currency = MarketDataContracts.forMarket(identity.market).currency,
+        volumeUnit = MarketDataContracts.forMarket(identity.market).volumeUnit,
+        providerId = result.providerId ?: result.source.toLegacyProviderId() ?: DataProviders.TENCENT,
+        marketTimeZone = marketTimeZone,
+        fetchedAtMillis = result.fetchedAtMillis,
+        analysisCutoffMillis = nowMillis(),
+        cutoffBarCompletion = HistoricalBarCompletion.UNKNOWN,
+    )
+
+    private fun completionFor(
+        timestampMillis: Long,
+        tradingSession: com.example.mysecondapp.domain.model.TradingSession,
+        nowMillis: Long,
+    ): HistoricalBarCompletion {
+        val barDate = tradingSession.localDateAt(timestampMillis)
+        val currentDate = tradingSession.localDateAt(nowMillis)
+        return when {
+            barDate < currentDate -> HistoricalBarCompletion.CONFIRMED
+            barDate > currentDate -> HistoricalBarCompletion.UNKNOWN
+            else -> {
+                val completion = tradingSession.completionTimestampMillis(barDate)
+                when {
+                    completion == null -> HistoricalBarCompletion.UNKNOWN
+                    nowMillis >= completion -> HistoricalBarCompletion.CONFIRMED
+                    else -> HistoricalBarCompletion.UNCONFIRMED
+                }
+            }
         }
     }
 

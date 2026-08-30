@@ -5,6 +5,47 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 object WatchlistMigrations {
 
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // M3 adds independent analysis tables; existing watchlist and K-line cache rows stay untouched.
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_rule (
+                    rule_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    conditionJson TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    PRIMARY KEY(rule_id)
+                )
+                """.trimIndent(),
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_analysis_rule_enabled ON analysis_rule(enabled)")
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_signal (
+                    rule_id TEXT NOT NULL,
+                    rule_version INTEGER NOT NULL,
+                    market TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    adjustment TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    signal_bar_timestamp_millis INTEGER NOT NULL,
+                    direction TEXT NOT NULL,
+                    cutoff_millis INTEGER NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    created_at_millis INTEGER NOT NULL,
+                    PRIMARY KEY(rule_id, rule_version, market, code, period, adjustment, provider_id, signal_bar_timestamp_millis, direction)
+                )
+                """.trimIndent(),
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_analysis_signal_market_code_created_at_millis ON analysis_signal(market, code, created_at_millis)")
+        }
+    }
+
     val MIGRATION_1_2 = object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
             // 旧表只有 sortOrder，没有分组字段；这里建新表后搬运数据，避免列重命名兼容问题。

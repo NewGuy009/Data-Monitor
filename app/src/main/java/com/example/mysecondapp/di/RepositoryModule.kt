@@ -10,6 +10,10 @@ import com.example.mysecondapp.domain.repository.MarketRepository
 import com.example.mysecondapp.domain.repository.StockDetailRepository
 import com.example.mysecondapp.domain.repository.StockSearchRepository
 import com.example.mysecondapp.domain.repository.WatchlistRepository
+import com.example.mysecondapp.data.analysis.RoomAnalysisRuleRepository
+import com.example.mysecondapp.data.analysis.RoomSignalRepository
+import com.example.mysecondapp.domain.repository.AnalysisRuleRepository
+import com.example.mysecondapp.domain.repository.SignalRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -43,4 +47,10 @@ abstract class RepositoryModule {
     abstract fun bindStockDetailRepository(
         repository: DefaultStockDetailRepository,
     ): StockDetailRepository
+
+    @Binds
+    abstract fun bindAnalysisRuleRepository(repository: RoomAnalysisRuleRepository): AnalysisRuleRepository
+
+    @Binds
+    abstract fun bindSignalRepository(repository: RoomSignalRepository): SignalRepository
 }

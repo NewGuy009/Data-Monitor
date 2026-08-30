@@ -4,11 +4,22 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mysecondapp.domain.model.CandlePeriod
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarQuality
+import com.example.mysecondapp.domain.analysis.indicator.toAnalysisInput
+import com.example.mysecondapp.domain.analysis.rule.AnalysisRule
+import com.example.mysecondapp.domain.analysis.rule.M3RuleTemplates
+import com.example.mysecondapp.domain.analysis.signal.BollingerPositionDetector
+import com.example.mysecondapp.domain.analysis.signal.ObvStateDetector
+import com.example.mysecondapp.domain.analysis.signal.RsiStateDetector
+import com.example.mysecondapp.domain.analysis.signal.TechnicalResult
+import com.example.mysecondapp.domain.analysis.signal.TrendStateDetector
+import com.example.mysecondapp.domain.analysis.signal.VolumeStateDetector
 import com.example.mysecondapp.domain.model.MarketDataResult
 import com.example.mysecondapp.domain.model.MarketError
 import com.example.mysecondapp.domain.model.StockDetailSnapshot
 import com.example.mysecondapp.domain.model.StockIdentity
 import com.example.mysecondapp.domain.repository.StockDetailRepository
+import com.example.mysecondapp.domain.repository.AnalysisRuleRepository
 import com.example.mysecondapp.ui.navigation.DetailDestination
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -25,16 +36,33 @@ import kotlinx.coroutines.sync.withLock
 /** 详情页状态只持有领域模型，网络、缓存和 Room 回退均由 Repository 处理。 */
 data class StockDetailUiState(
     val identity: StockIdentity,
-    val selectedPeriod: CandlePeriod = CandlePeriod.DAY,
+    val selectedPeriod: CandlePeriod = CandlePeriod.MINUTE,
     val snapshot: StockDetailSnapshot? = null,
     val isRefreshing: Boolean = false,
     val errorMessage: String? = null,
+    val analysis: StockAnalysisUiState? = null,
+    val enabledRuleIds: Set<String> = emptySet(),
+)
+
+/** 详情页分析摘要只暴露已计算的事实，不在 Compose 中重新计算指标。 */
+data class StockAnalysisUiState(
+    val quality: HistoricalBarQuality,
+    val issueCodes: List<String>,
+    val cutoffMillis: Long,
+    val providerId: String,
+    val adjustment: String,
+    val trend: TechnicalResult? = null,
+    val rsi: TechnicalResult? = null,
+    val volume: TechnicalResult? = null,
+    val bollinger: TechnicalResult? = null,
+    val obv: TechnicalResult? = null,
 )
 
 @HiltViewModel
 class StockDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val stockDetailRepository: StockDetailRepository,
+    private val analysisRuleRepository: AnalysisRuleRepository,
 ) : ViewModel() {
 
     private val identity = StockIdentity(
@@ -42,11 +70,13 @@ class StockDetailViewModel @Inject constructor(
         code = requireNotNull(savedStateHandle[DetailDestination.CODE_ARGUMENT]),
     )
     private val refreshMutex = Mutex()
-    private val selectedPeriod = MutableStateFlow(CandlePeriod.DAY)
+    private val selectedPeriod = MutableStateFlow(CandlePeriod.MINUTE)
     private val isRefreshing = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
+    private val analysis = MutableStateFlow<StockAnalysisUiState?>(null)
+    private val enabledRuleIds = MutableStateFlow<Set<String>>(emptySet())
 
-    val uiState: StateFlow<StockDetailUiState> = combine(
+    private val baseUiState = combine(
         selectedPeriod,
         stockDetailRepository.observeDetail(identity),
         isRefreshing,
@@ -59,13 +89,22 @@ class StockDetailViewModel @Inject constructor(
             isRefreshing = refreshing,
             errorMessage = error,
         )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = StockDetailUiState(identity = identity),
-    )
+    }
+    val uiState: StateFlow<StockDetailUiState> = baseUiState
+        .combine(analysis) { state, analysisState -> state.copy(analysis = analysisState) }
+        .combine(enabledRuleIds) { state, ruleIds -> state.copy(enabledRuleIds = ruleIds) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = StockDetailUiState(identity = identity),
+        )
 
     init {
+        viewModelScope.launch {
+            analysisRuleRepository.observeEnabled().collect { rules ->
+                enabledRuleIds.value = rules.map(AnalysisRule::id).toSet()
+            }
+        }
         refresh()
     }
 
@@ -90,7 +129,47 @@ class StockDetailViewModel @Inject constructor(
                     is MarketDataResult.Success -> Unit
                     is MarketDataResult.Failure -> errorMessage.value = result.error.toUserMessage()
                 }
+                refreshAnalysis()
                 isRefreshing.value = false
+            }
+        }
+    }
+
+    fun enableTemplate(rule: AnalysisRule) {
+        viewModelScope.launch {
+            analysisRuleRepository.save(rule)
+        }
+    }
+
+    private suspend fun refreshAnalysis() {
+        when (val result = stockDetailRepository.fetchHistoricalBarSeries(identity, CandlePeriod.DAY)) {
+            is MarketDataResult.Failure -> analysis.value = null
+            is MarketDataResult.Success -> {
+                val validation = result.value
+                val summary = if (validation.quality == HistoricalBarQuality.COMPLETE) {
+                    val input = validation.toAnalysisInput()
+                    StockAnalysisUiState(
+                        quality = validation.quality,
+                        issueCodes = validation.issues.map { it.code.name },
+                        cutoffMillis = validation.series.analysisCutoffMillis,
+                        providerId = validation.series.providerId.value,
+                        adjustment = validation.series.adjustment.name,
+                        trend = TrendStateDetector().detect(input),
+                        rsi = RsiStateDetector().detect(input),
+                        volume = VolumeStateDetector().detect(input),
+                        bollinger = BollingerPositionDetector().detect(input),
+                        obv = ObvStateDetector().detect(input),
+                    )
+                } else {
+                    StockAnalysisUiState(
+                        quality = validation.quality,
+                        issueCodes = validation.issues.map { it.code.name },
+                        cutoffMillis = validation.series.analysisCutoffMillis,
+                        providerId = validation.series.providerId.value,
+                        adjustment = validation.series.adjustment.name,
+                    )
+                }
+                analysis.value = summary
             }
         }
     }

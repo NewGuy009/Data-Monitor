@@ -8,6 +8,7 @@ import com.example.mysecondapp.domain.model.OrderBook
 import com.example.mysecondapp.domain.model.StockDetailSnapshot
 import com.example.mysecondapp.domain.model.StockIdentity
 import com.example.mysecondapp.domain.model.TradeTick
+import com.example.mysecondapp.domain.analysis.history.HistoricalBarValidationResult
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -37,6 +38,13 @@ interface StockDetailRepository {
         period: CandlePeriod,
         limit: Int = DEFAULT_CANDLE_LIMIT,
     ): MarketDataResult<List<Candle>>
+
+    /** 获取带来源元数据和质量结果的历史分析输入；不会改变详情图表的 K 线接口。 */
+    suspend fun fetchHistoricalBarSeries(
+        identity: StockIdentity,
+        period: CandlePeriod = CandlePeriod.DAY,
+        limit: Int = DEFAULT_CANDLE_LIMIT,
+    ): MarketDataResult<HistoricalBarValidationResult>
 
     /** 拉取盘口；无稳定数据时允许成功返回空盘口。 */
     suspend fun fetchOrderBook(identity: StockIdentity): MarketDataResult<OrderBook>

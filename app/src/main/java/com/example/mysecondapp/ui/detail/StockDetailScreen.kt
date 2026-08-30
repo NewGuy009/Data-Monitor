@@ -21,6 +21,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material.icons.Icons
@@ -38,12 +39,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.mysecondapp.domain.model.CandlePeriod
 import com.example.mysecondapp.domain.model.IntradayCoverage
 import com.example.mysecondapp.domain.model.IntradaySeries
+import com.example.mysecondapp.domain.model.MarketDataContracts
 import com.example.mysecondapp.domain.model.OrderBook
 import com.example.mysecondapp.domain.model.OrderBookLevel
 import com.example.mysecondapp.domain.model.OrderBookSide
 import com.example.mysecondapp.domain.model.StockDetailSnapshot
 import com.example.mysecondapp.domain.model.TradeDirection
 import com.example.mysecondapp.domain.model.TradeTick
+import com.example.mysecondapp.domain.analysis.rule.M3RuleTemplates
+import com.example.mysecondapp.domain.analysis.signal.TechnicalResult
+import com.example.mysecondapp.domain.analysis.signal.TechnicalResultStatus
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -68,6 +73,7 @@ fun StockDetailScreen(
         onBackClick = onBackClick,
         onPeriodSelected = viewModel::selectPeriod,
         onRefresh = viewModel::refresh,
+        onRuleTemplateSelected = viewModel::enableTemplate,
         modifier = modifier.testTag(StockDetailTestTags.Screen),
     )
 }
@@ -79,6 +85,7 @@ fun StockDetailContent(
     onBackClick: () -> Unit,
     onPeriodSelected: (CandlePeriod) -> Unit,
     onRefresh: () -> Unit,
+    onRuleTemplateSelected: (com.example.mysecondapp.domain.analysis.rule.AnalysisRule) -> Unit = {},
     modifier: Modifier = Modifier,
     nowMillis: () -> Long = System::currentTimeMillis,
 ) {
@@ -128,6 +135,13 @@ fun StockDetailContent(
                         nowMillis = nowMillis,
                     )
                 }
+                item { DetailAnalysisSection(analysis = uiState.analysis) }
+                item {
+                    DetailRuleTemplatesSection(
+                        enabledRuleIds = uiState.enabledRuleIds,
+                        onRuleTemplateSelected = onRuleTemplateSelected,
+                    )
+                }
                 uiState.errorMessage?.let { message ->
                     item {
                         Text(
@@ -139,6 +153,89 @@ fun StockDetailContent(
                 }
                 item { DetailOrderBookSection(snapshot = uiState.snapshot) }
                 item { DetailTradeTicksSection(snapshot = uiState.snapshot) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailAnalysisSection(analysis: StockAnalysisUiState?) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalDivider()
+        Text(text = "Historical analysis", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        if (analysis == null) {
+            Text(
+                text = "Historical analysis unavailable",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+        Text(
+            text = "${analysis.quality.name}  |  ${analysis.providerId}  |  ${analysis.adjustment}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = "Cutoff: ${analysis.cutoffMillis.formatAnalysisDate()}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (analysis.issueCodes.isNotEmpty()) {
+            Text(
+                text = "Data issues: ${analysis.issueCodes.joinToString()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        listOfNotNull(analysis.trend, analysis.rsi, analysis.volume, analysis.bollinger, analysis.obv).forEach { result ->
+            AnalysisResultRow(result)
+        }
+    }
+}
+
+@Composable
+private fun AnalysisResultRow(result: TechnicalResult) {
+    val values = result.values.entries.joinToString { (key, value) -> "$key=${value.formatDetailPrice()}" }
+    Text(
+        text = "${result.kind}: ${result.reasonCode.name}  $values",
+        style = MaterialTheme.typography.bodySmall,
+        color = if (result.status == TechnicalResultStatus.UNAVAILABLE) {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+    )
+}
+
+@Composable
+private fun DetailRuleTemplatesSection(
+    enabledRuleIds: Set<String>,
+    onRuleTemplateSelected: (com.example.mysecondapp.domain.analysis.rule.AnalysisRule) -> Unit,
+) {
+    val templates = listOf(
+        M3RuleTemplates.emaGoldenCross(),
+        M3RuleTemplates.emaDeathCross(),
+        M3RuleTemplates.rsiOversoldRecovery(),
+        M3RuleTemplates.volumeBreakout(),
+        M3RuleTemplates.bullishEngulfing(),
+        M3RuleTemplates.bearishEngulfing(),
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        HorizontalDivider()
+        Text(text = "Rule templates", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        templates.forEach { template ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(template.name, style = MaterialTheme.typography.bodySmall)
+                TextButton(
+                    onClick = { onRuleTemplateSelected(template) },
+                    enabled = template.id !in enabledRuleIds,
+                ) {
+                    Text(if (template.id in enabledRuleIds) "Enabled" else "Enable")
+                }
             }
         }
     }
@@ -206,10 +303,16 @@ private fun DetailChartSection(
             selectedPeriod == CandlePeriod.MINUTE && snapshot.intraday?.points?.isNotEmpty() == true -> {
                 val intraday = snapshot.intraday
                 IntradayCoverageSummary(intraday = intraday, nowMillis = nowMillis())
-                IntradayPriceChart(points = intraday.points)
+                IntradayPriceChart(
+                    points = intraday.points,
+                    marketTimeZone = intraday.marketTimeZone,
+                )
             }
             snapshot.candlePeriod == selectedPeriod && snapshot.candles.isNotEmpty() -> {
-                CandleStickChart(candles = snapshot.candles)
+                CandleStickChart(
+                    candles = snapshot.candles,
+                    marketTimeZone = MarketDataContracts.forMarket(snapshot.identity.market).marketTimeZone,
+                )
             }
             else -> DetailChartPlaceholder("No chart data available")
         }
@@ -394,6 +497,12 @@ private fun Long.formatIntradayTime(): String = IntradayTimeFormatter.format(Dat
 private val IntradayTimeFormatter = SimpleDateFormat("HH:mm", Locale.ROOT).apply {
     timeZone = TimeZone.getTimeZone("Asia/Shanghai")
 }
+
+private val AnalysisDateFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).apply {
+    timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+}
+
+private fun Long.formatAnalysisDate(): String = AnalysisDateFormatter.format(Date(this))
 
 object StockDetailTestTags {
     const val Screen = "stock_detail_screen"

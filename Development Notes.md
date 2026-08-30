@@ -232,6 +232,15 @@
 - Existing `StockIdentity` Tencent helper methods remain as deprecated-compatible behavior for older tests and stored callers; production provider paths no longer depend on them.
 - Verification passed: `:app:testDebugUnitTest`, `:app:compileDebugAndroidTestKotlin`, and `git diff --check`.
 
+### 2026-08-24 - M2 Tencent intraday time semantics corrected
+
+- Confirmed Tencent `app/minute/query` does not return epoch timestamps directly. Its payload provides a trading date such as `20260824` and ordered minute snapshot strings such as `0930 9.01 4337 3907637.00`; the fields are minute, price, cumulative volume, and cumulative turnover.
+- The data boundary combines the trading date and `HHmm` value in `Asia/Shanghai` and exposes each point as an `IntradayPoint.timestampMillis`. The series therefore represents an ordered set of available minute snapshots, not a fixed one-point-per-second stream and not necessarily a complete day while trading is in progress.
+- Tencent `fqkline/get` is separate: day/week/month responses contain date plus OHLC fields per period. These are `Candle` records and are not interchangeable with the minute snapshot series.
+- Fixed the detail chart to format intraday labels with the series' market timezone instead of the device timezone. The screenshot's `09:30-14:25` data can no longer be displayed as `01:30-06:25` on a UTC device.
+- Reduced intraday point spacing and removed end-scroll behavior so the available trading-day minute series is presented as a whole-day chart instead of showing only the final few minutes.
+- Verification passed: `:app:testDebugUnitTest`, `:app:compileDebugAndroidTestKotlin`, and `git diff --check`.
+
 ### 2026-08-21 - M2.S.4 global market data contract completed
 
 - Added `CurrencyCode`, `QuantityUnit`, `TradingWindow`, `TradingSession`, and `MarketDataContract`. Contracts are available for A shares, US equities, Korean equities, and an explicit unknown fallback.
@@ -268,3 +277,155 @@
 - The existing Settings screen already limits source choices to registered providers with an executable quote data source, so Tencent/Sina remain selectable while US/Korean registration-only providers stay hidden.
 - Added regression coverage that excludes remote results outside the selected provider's market/search contract.
 - Verification passed: `:app:testDebugUnitTest`, `:app:compileDebugAndroidTestKotlin`, and `git diff --check`.
+
+### 2026-08-24 - M2 chart horizontal-axis test fix completed
+
+- Fixed the detail-page intraday and candle charts' horizontal-axis labeling by restoring Vico's default adaptive tick placement. The chart still uses continuous point indexes for uniform trading-point spacing.
+- Axis label lookup now rounds interpolated Vico values and clamps them to the available label range, preventing invalid values from falling back to the last timestamp while keeping the default axis labels visible.
+- Added unit coverage for horizontal-axis index boundary behavior in `StockChartsTest`.
+- Verification passed: `:app:testDebugUnitTest`, `:app:compileDebugAndroidTestKotlin`, and `git diff --check`.
+
+### 2026-08-26 - M2 chart price-axis auto range completed
+
+- Vico's default positive-value range starts the vertical axis at zero, which compresses low-priced stocks whose actual fluctuation is only a few cents.
+- Added a shared adaptive price range provider for intraday and candlestick charts. It uses the actual data high/low range with 8% padding, keeps positive-only prices above zero, and adds a minimum margin when all values are equal.
+- Added unit coverage for low-priced small-range data and equal-price data in `StockChartsTest`.
+- Verification passed: `:app:testDebugUnitTest` and `git diff --check`.
+
+### 2026-08-26 - M2 chart extrema labels completed
+
+- Added persistent Vico markers to the detail charts. The `Time` chart marks the highest and lowest price points in the loaded intraday snapshot series; day/week/month candlestick charts mark the selected loaded range's highest `high` and lowest `low`.
+- High and low labels are drawn next to the actual chart coordinates, with `H price` above the high point and `L price` below the low point. The markers follow chart scrolling, zooming, and adaptive price-axis changes instead of being fixed Compose overlays.
+- Empty data does not create markers. When one point is both the high and low, the chart uses a combined marker to avoid duplicate rendering.
+- The current extrema scope is the complete data list loaded for the chart, not only the currently visible viewport. A marker outside the initial viewport becomes visible after scrolling to its candle or point.
+- Verification passed: `:app:compileDebugKotlin`, `:app:testDebugUnitTest`, `:app:compileDebugAndroidTestKotlin`, and `git diff --check`.
+
+### 2026-08-26 - Detail chart default period restored to Time
+
+- Changed `StockDetailViewModel` initial chart period from `CandlePeriod.DAY` to `CandlePeriod.MINUTE`.
+- Opening a stock detail page now requests and selects the `Time` chart by default; users can still switch to day/week/month candles manually.
+- Verification passed: `:app:compileDebugKotlin`, `:app:testDebugUnitTest`, and `git diff --check`.
+
+### 2026-08-27 - Android emulator freeze troubleshooting
+
+- Symptom: the Android Studio embedded emulator displayed the Android launcher, but all touch/click input was unresponsive. App deployment and launch therefore appeared to have no effect.
+- Diagnosis: this was an emulator/AVD runtime failure, not an application startup failure and not caused by the detail-chart changes. ADB connectivity became unstable while the emulator UI was frozen.
+- Resolution: deleted the old `Medium_Phone` emulator and created a new AVD. The new emulator is the required target for subsequent app deployment and verification.
+
+### 2026-08-28 - M3.0.1 completed: current-state assessment (G0)
+
+- Confirmed the existing historical data path: `MarketDataProvider` / Tencent parser normalizes day, week, and month payloads into chronological `Candle` lists; `DefaultStockDetailRepository` selects providers, owns in-memory fallback, and writes non-minute K-lines through `KlineCache`; `RoomKlineCache` persists them in `kline`; `StockDetailViewModel` only requests and exposes the selected period to the chart UI.
+- Reuse decision: retain `Candle` as the immutable OHLCV value object. `CandlePeriod`, `CandleAdjustment`, currency, and volume unit are already explicit. Provider ID, stock identity, market time zone, fetch time, and analysis cutoff must be introduced as historical-series metadata rather than copied into every Bar.
+- Confirmed cache isolation: memory and Room identities include stock, period, adjustment, and provider. The Room v6 primary key also includes timestamp, so QFQ/RAW and provider series cannot overwrite each other. M3 must preserve this key boundary when it creates analysis inputs and signal identities.
+- Confirmed availability: Tencent `fqkline/get` supplies date plus OHLC and volume for day/week/month, capped by the repository request limit (currently 320 by default). `app/minute/query` supplies only current-trading-day minute snapshots and is explicitly excluded from M3 historical replay.
+- Identified M3 gaps: parser and Room write paths reject malformed/unsorted candles, but may discard malformed rows before an analysis caller can see a structured reason; no `HistoricalBarSeries`, quality state, market-aware gap evaluation, analysis cutoff, or final-daily-Bar confirmation contract exists; Room stores fetch time per Bar but not series-level provenance or validation outcome.
+- G0 decision: M3 is approved to start with one stock and confirmed daily Bars. M3.1 must create the pure validation boundary before any indicator or rule implementation; day/week/month remain reusable contracts but only daily event rules are in the first release.
+- Verification evidence: source-to-analysis path, required fields, and unavailable fields were traced from the provider parser through repository, cache, Room, ViewModel, and chart. No historical-minute or unsupported-provider capability is assumed by the M3 scope.
+
+### 2026-08-30 - M3.0.2 completed: first-release requirements baseline (G1)
+
+- First-release input boundary is one stock's validated, confirmed daily Bar series. Day/week/month share the future domain contract, but only daily Bars may trigger M3 event rules. A series may use QFQ or RAW data, provided its adjustment, provider, currency, and volume unit stay internally consistent and are retained in the result identity.
+- An analysis result is a factual state or a rule event with a data cutoff. It is not a prediction, investment recommendation, order, or notification. Trend state such as `EMA12 > EMA26` is not itself an EMA golden-cross event; an event requires the previous confirmed Bar to be on the opposite/equal side and the cutoff Bar to cross it.
+- Frozen template contracts: EMA cross uses close prices with fast/slow defaults `12/26`, requires at least 27 daily Bars, and records both EMA values plus previous-side evidence; RSI oversold recovery uses RSI(14), threshold 30, requires at least 16 daily Bars, and requires RSI to cross from `<= 30` to `> 30`; volume breakout uses the prior 20-Bar high and prior 20-Bar average volume, requires at least 21 daily Bars, and requires the cutoff close to exceed the prior high with volume at least 1.5 times the prior average; bullish/bearish engulfing requires two daily Bars and records both OHLC pairs.
+- Frozen directions: golden cross, RSI recovery, volume breakout, and bullish engulfing produce `BULLISH`; death cross and bearish engulfing produce `BEARISH`. A template does not emit a neutral event. Missing volume makes a volume breakout unavailable rather than zero-volume or false.
+- Frozen evidence: each signal must retain template/rule ID and version, stock identity, period, adjustment, provider, cutoff Bar timestamp, direction, source indicator/pattern values, and a machine-readable matched-condition list. Re-running the same rule for the same identity, series contract, cutoff Bar, and direction must create no second durable signal.
+- Deferred from M3 first release: MACD/RSI divergence, multi-period conditions, visual expression editing, historical minute replay, automatic trading, ranking, profitability claims, Android notifications, and background polling.
+- G1 decision: requirements are frozen. Later additions enter the backlog unless they correct data integrity, no-lookahead behavior, or safety.
+- Verification evidence: every template has a single daily input period, minimum history, event condition, direction, evidence shape, and idempotency policy; the EMA acceptance example explicitly separates an ongoing bullish trend from a new cross event.
+
+### 2026-08-30 - M3.1-M3.3 architecture baseline approved (G2)
+
+- Historical input design: add a domain-only `HistoricalBarSeries` that owns stock identity, Bars, period, adjustment, currency, volume unit, provider ID, market timezone, fetch time, selected cutoff Bar, and cutoff-Bar completion state. `Candle` remains the shared normalized OHLCV value object. All analysis operates on the explicit prefix ending at the cutoff, so a replay cannot observe later Bars.
+- Quality design: `HistoricalBarValidator` returns a `HistoricalBarValidationResult` containing the usable Bar prefix, a single precedence-based quality state, and all structured issue codes. Invalid structural data wins over insufficient history, gaps, and partial/unconfirmed status. The validator does not mutate or silently discard a malformed Bar. Calendar gaps are reported only when a caller supplies an expected trading-bar calendar; without one, weekends, holidays, suspensions, and listing dates remain conservative and do not create a gap failure.
+- Analysis boundary design: indicators and patterns will consume validated `HistoricalAnalysisInput` objects in a later M3.2 step. Indicators calculate values; pattern detectors identify timestamped structures; rules interpret those typed outputs. Each calculation declares a cutoff and explicit unavailable/warmup state. UI calls use cases only and never recalculates market data.
+- Persistence design: M3.8 will introduce separate Rule and Signal Room entities. Signal identity is `ruleId + stock market/code + period + adjustment + providerId + signalBarTimestamp + direction`; evidence is persisted as a versioned serialized payload together with source contract metadata. Transient indicator series and unmatched evaluations remain in memory, not Room. The Room migration is planned from v6 only when these entities are actually introduced.
+- UI design: M3.9 will map analysis into loading, insufficient, partial, invalid, ready/no-match, and matched-signal states. The first detail-page surface is read-only and shows quality, cutoff, provider/adjustment, and evidence. Template editing comes after the domain and persistence paths, and it will not label a state as a guaranteed buy or sell.
+- G2 decision: contracts are approved for implementation. The first code increment is the isolated `HistoricalBarSeries` validator plus JUnit fixtures; Repository adaptation, indicators, Room, and Compose remain separate following increments.
+
+### 2026-08-30 - M3.4 validation boundary increment completed
+
+- Added pure Kotlin `HistoricalBarSeries`, `HistoricalBarCompletion`, `HistoricalBarQuality`, structured issue codes, validation options, and `HistoricalBarValidationResult` under `domain.analysis.history`.
+- `HistoricalBarValidator` explicitly limits analysis to Bars at or before the declared cutoff. It reports empty/insufficient history, cutoff mismatch, ordering and duplicate errors, invalid/non-finite OHLC, negative volume/turnover, mixed series metadata, optional calendar gaps, and unconfirmed cutoff Bars.
+- Quality precedence is deterministic: structural invalidity -> `INVALID`; too few usable Bars -> `INSUFFICIENT_HISTORY`; explicit calendar gap -> `GAPPED`; unknown/unconfirmed cutoff -> `PARTIAL`; otherwise `COMPLETE`. Only `COMPLETE` is eligible for final event rules.
+- Added JVM fixtures for valid future-Bar exclusion, empty/one-Bar history, malformed values, ordering, metadata mixing, conservative calendar gaps, and unconfirmed cutoff behavior.
+- Verification passed: `:app:testDebugUnitTest` (`65 tests completed`) and `git diff --check`.
+- Repository integration: added `StockDetailRepository.fetchHistoricalBarSeries()`. The existing `fetchCandles()` remains the M2 chart/cache API; the new method adds series metadata, derives the market-local cutoff completion state, and validates before returning an analysis input.
+- Stage status: M3.4/G3 passed. Invalid data is returned as a structured validation result and is not sent to an analysis consumer; no separate analysis-ready cache exists yet, while the existing chart cache remains intentionally independent.
+
+### 2026-08-30 - M3.5 completed: indicator registry and baseline calculators (G4)
+
+- Added the pure Kotlin `Indicator`, `IndicatorDefinition`, `IndicatorValue`, `IndicatorSeries`, and duplicate-safe `IndicatorRegistry` contracts. Indicators expose parameter definitions, supported periods, required fields, warmup length, timestamp-aligned values, and explicit unavailable reasons.
+- Added baseline calculators for SMA, EMA, volume SMA, MACD, RSI, Bollinger Bands, ATR, and OBV. MACD exposes `macd`, `signal`, and `histogram` as typed outputs instead of packing values into a display string.
+- Calculation design: warmup Bars are `WARMUP`; null volume is `MISSING_INPUT`; non-finite or broken recursive input is `INVALID_VALUE`; unsupported period is `UNSUPPORTED_PERIOD`. No indicator substitutes zero for unavailable input.
+- Added hand-calculated fixtures for SMA/EMA, RSI, Bollinger Bands, MACD, volume SMA, ATR, and OBV, plus registry duplicate rejection, missing-volume handling, non-finite handling, and a cross-indicator cutoff invariance test proving future Bars do not change the value at an earlier timestamp.
+- Verification passed: `:app:testDebugUnitTest` and `git diff --check`.
+- G4 decision: indicator results are ready for the pattern and rule layers. Wider reference fixtures and the complete test matrix remain scheduled for M3.11.
+
+### 2026-08-30 - M3.6 completed: technical states and pattern detectors
+
+- Added a typed `TechnicalResult` contract with match status, stable reason code, source Bar timestamps, numeric evidence, and parameters. Rules will consume these objects directly; UI has no parsing role in analysis decisions.
+- Implemented EMA trend state and EMA golden/death cross event detection. The cross detector compares the final two confirmed indicator points: an ongoing bullish/bearish EMA relationship returns `NOT_MATCHED`, so it cannot repeatedly emit a cross event.
+- Implemented RSI state, volume-versus-average state, Bollinger-band position, and OBV direction state. Also added candle body/range/shadow geometry, bullish/bearish engulfing, and range breakout with configurable lookback and volume multiplier.
+- Added an explicit `SwingPointDetector`/`SwingPoint` contract only. MACD/RSI divergence remains deferred until a reviewed swing-point algorithm and deterministic fixtures are available.
+- Added tests for positive, near-miss, insufficient-history, one-time EMA cross, structured evidence, and candle geometry behavior.
+- Verification passed: `:app:testDebugUnitTest` and `git diff --check`.
+- Stage status: outputs are ready for M3.7 typed rules and signal idempotency; they remain factual analysis results rather than buy/sell instructions.
+
+### 2026-08-30 - M3.7 completed: rule evaluation and signal idempotency (G5)
+
+- Added typed `AnalysisRule`, `RuleCondition`, `RuleAnalysisContext`, `RuleEvaluation`, `RuleEvidence`, and `SignalRecord` contracts. Atomic conditions support technical events and indicator thresholds; condition groups support `ALL`, `ANY`, and `NOT` with evidence propagation.
+- Rule evaluation order is deterministic: disabled/period mismatch/data-quality block is handled before condition evaluation; incomplete, partial, gapped, or invalid historical input cannot produce a final matched event.
+- Added six first-release templates: EMA golden cross, EMA death cross, RSI oversold recovery, volume breakout, bullish engulfing, and bearish engulfing. RSI recovery is explicitly a two-point crossing event, separate from the persistent RSI oversold state.
+- Signal identity includes rule ID/version, stock identity, period, adjustment, provider, signal Bar timestamp, and direction. `SignalDeduplicator` rejects a second record with the same key; rule version, provider, period, or direction changes produce a distinct key.
+- Kept cooldown/notification behavior out of M3.7. Idempotency records historical facts now; M4 will decide whether and when a matched fact is delivered as a reminder.
+- Added tests for template evidence, `ALL/ANY/NOT`, indicator thresholds, data-quality blocking, duplicate prevention, and versioned signal identity.
+- Verification passed: `:app:testDebugUnitTest` (`87 tests completed`) and `git diff --check`.
+- G5 decision: domain rules are ready for Room persistence and use-case integration. No UI or automatic trading behavior has been introduced.
+
+### 2026-08-30 - M3.8 completed: Room repositories and evaluation use case
+
+- Added Room v7 `analysis_rule` and `analysis_signal` tables. Migration `6 -> 7` creates only these independent tables, preserving all existing watchlist and K-line rows.
+- `analysis_rule` stores the current versioned rule and typed condition tree JSON. `analysis_signal` uses the complete rule/version/stock/period/adjustment/provider/signal-Bar/direction composite key, so SQLite enforces historical signal idempotency rather than relying only on an in-memory set.
+- Added `AnalysisRuleDao`, `SignalDao`, `RoomAnalysisRuleRepository`, and `RoomSignalRepository`. Mapping tests prove nested condition trees and evidence-bearing signal records survive entity round trips.
+- Added `EvaluateEnabledRules`, which reads enabled rules, delegates all decisions to the pure `RuleEvaluator`, and persists matched records through `SignalRepository`; it has no SQL or UI logic.
+- Added Android DAO tests for duplicate signal insertion and same-rule replacement. These are compiled but intentionally not run in this turn because no emulator/device execution was requested.
+- Verification passed: `:app:testDebugUnitTest` and `:app:compileDebugAndroidTestKotlin`; `git diff --check` passed.
+- Stage status: M3.8 code and compile gate passed. Device/in-memory Room execution remains part of M3.11/M3.12 acceptance evidence.
+
+### 2026-08-30 - M3.9 completed: detail analysis summary and rule template UI
+
+- Extended `StockDetailUiState` with an independent `StockAnalysisUiState` and enabled rule IDs. The detail ViewModel requests daily historical analysis separately from the selected chart period, so the default Time chart does not accidentally become the rule-analysis input.
+- The ViewModel maps validated daily data into read-only trend, RSI, volume, Bollinger position, and OBV facts. Non-`COMPLETE` quality only shows quality/issues and does not calculate or display analysis facts as valid.
+- Added the detail-page Historical analysis section showing quality, Provider, adjustment, cutoff, issue codes, and numeric evidence. Existing quote, chart, order-book, and trade sections remain independently degradable.
+- Added the six first-release rule-template actions. Enabling a template calls `AnalysisRuleRepository`; Compose does not calculate conditions or write Room directly. Enabled templates are disabled in the list after the repository Flow reflects them.
+- Added Compose coverage for analysis summary rendering, evidence rendering, and template callback behavior.
+- Verification passed: `:app:testDebugUnitTest`, `:app:compileDebugAndroidTestKotlin`, and `git diff --check`.
+- Stage status: M3.9 compile/UI-contract gate passed. Device rendering and real Room interaction remain M3.12 acceptance work.
+
+### 2026-08-30 - M3.10 completed: historical rule replay
+
+- Added `HistoricalRuleReplayer`, `ReplayPoint`, `HistoricalReplayResult`, and the `ReplayRuleHistory` use-case boundary. Replay evaluates a rule independently at each source Bar cutoff and retains a point for every source Bar.
+- Replay creates a fresh validated prefix for each timestamp. It marks early points as insufficient history, quality failures as blocked, and an unconfirmed final Bar as partial; none are silently removed or considered matched.
+- Replay builds the same typed technical results used by the detail analysis and first-release rules. It does not use minute snapshots, network calls, UI state, or future Bars.
+- Added deterministic replay tests for volume-breakout matching, repeated replay equality, appended-future-Bar invariance of statuses/evidence, and unconfirmed-final-Bar handling.
+- Verification passed: `:app:testDebugUnitTest` and `git diff --check`.
+- Stage status: M3.10 replay gate passed. M3.11 must now run the complete automated matrix and compile regression suite.
+
+### 2026-08-30 - M3.11 completed: automated verification matrix
+
+- Scope delivered: reran the M3 JVM unit-test suite, Android-test Kotlin compilation, Debug APK assembly, and whitespace validation after the M3.10 implementation.
+- Verification: `gradlew.bat :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:assembleDebug` -> passed; `git diff --check` -> passed.
+- Execution note: Gradle reused the configuration cache and all requested tasks were `UP-TO-DATE`; this confirms the current outputs but is not a clean-build result.
+- Stage status: M3.11 automated gate passed. Room DAO tests and Compose analysis UI tests are compiled but not executed; M3.12 must run them on the replacement emulator or a physical device.
+
+### M3.12 manual acceptance checklist - pending device execution
+
+- [ ] Open an A-share detail page with sufficient daily history; verify the analysis cutoff is the final confirmed daily Bar.
+- [ ] Open a stock with insufficient or invalid history; verify no event signal is shown as valid.
+- [ ] Enable an EMA cross template and evaluate the same closing Bar twice; verify only one durable signal exists.
+- [ ] Switch day/week/month chart views; verify period, provider, and adjustment metadata do not mix.
+- [ ] Inspect a stored signal; verify rule version, source Bar time, source values, direction, and reason are visible.
+- [ ] Run the same fixed historical replay twice; verify signal dates and evidence are identical.
+
+- Current status: not executed in this turn. Room DAO Android tests and Compose analysis UI tests also require execution on the replacement emulator or a physical device.
+- Acceptance owner: local tester. Record pass/fail evidence here before approving the M3 G6 close-out.

@@ -6,6 +6,8 @@ import com.example.mysecondapp.data.local.AppDatabase
 import com.example.mysecondapp.data.local.KlineDao
 import com.example.mysecondapp.data.local.WatchlistDao
 import com.example.mysecondapp.data.local.WatchlistMigrations
+import com.example.mysecondapp.data.local.AnalysisRuleDao
+import com.example.mysecondapp.data.local.SignalDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -33,6 +35,7 @@ object DatabaseModule {
         .addMigrations(WatchlistMigrations.MIGRATION_3_4)
         .addMigrations(WatchlistMigrations.MIGRATION_4_5)
         .addMigrations(WatchlistMigrations.MIGRATION_5_6)
+        .addMigrations(WatchlistMigrations.MIGRATION_6_7)
         .build()
 
     @Provides
@@ -44,4 +47,10 @@ object DatabaseModule {
     fun provideKlineDao(
         appDatabase: AppDatabase,
     ): KlineDao = appDatabase.klineDao()
+
+    @Provides
+    fun provideAnalysisRuleDao(appDatabase: AppDatabase): AnalysisRuleDao = appDatabase.analysisRuleDao()
+
+    @Provides
+    fun provideSignalDao(appDatabase: AppDatabase): SignalDao = appDatabase.signalDao()
 }
